@@ -21,7 +21,7 @@ use std::fmt;
 
 use rstd::prelude::*;
 use codec::Codec;
-use traits::{self, Member, Block as BlockT, Header as HeaderT};
+use traits::{self, Member, Block as BlockT, Header as HeaderT, DigestItemFor};
 use ::Justification;
 
 /// Something to identify a block.
@@ -145,8 +145,9 @@ pub struct ImportBlock<Block: BlockT> {
 	pub header: Block::Header,
 	/// Justification provided for this block from the outside
 	pub external_justification: Justification,
-	/// Internal Justification for the block
-	pub internal_justification: Vec<u8>, // Block::Digest::DigestItem?
+	/// Internal Justification for the block: this is a digest item which
+	/// should be added to the block's header after verification.
+	pub internal_justification: Option<DigestItemFor<Block>>,
 	/// Block's body
 	pub body: Option<Vec<Block::Extrinsic>>,
 	/// Is this block finalized already?
@@ -165,7 +166,7 @@ impl<Block: BlockT> ImportBlock<Block> {
 			BlockOrigin,
 			<Block as BlockT>::Header,
 			Justification,
-			Justification,
+			DigestItemFor<Block>,
 			Option<Vec<<Block as BlockT>::Extrinsic>>,
 			bool,
 			Vec<(Vec<u8>, Option<Vec<u8>>)>,

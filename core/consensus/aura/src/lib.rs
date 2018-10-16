@@ -45,29 +45,17 @@ extern crate log;
 
 extern crate futures;
 
-#[macro_use]
-extern crate error_chain;
-
-#[macro_use]
-extern crate serde;
-
-#[macro_use]
-extern crate parity_codec_derive;
-
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::{Instant, Duration};
+use std::time::Duration;
 
 use consensus_common::{Authorities, BlockImport, Environment, Proposer};
 use client::{ChainHead, ImportBlock, BlockOrigin};
-use codec::Encode;
-use runtime_primitives::{generic::BlockId, Justification};
-use runtime_primitives::traits::{Block, Header};
-use primitives::{AuthorityId, ed25519, ed25519::LocalizedSignature};
+use runtime_primitives::generic::BlockId;
+use runtime_primitives::traits::{Block, Header, Digest, DigestItem, DigestItemFor};
+use primitives::{AuthorityId, ed25519};
 
-use futures::{Async, Stream, Sink, Future, IntoFuture};
+use futures::{Stream, Future, IntoFuture};
 use tokio::timer::Interval;
-use parking_lot::Mutex;
 
 /// Configuration for Aura consensus.
 pub struct Config {
@@ -111,6 +99,13 @@ fn slot_now(slot_duration: u64) -> Result<u64, ()> {
 			return Err(())
 		}
 	}
+}
+
+/// A digest item which is usable with aura consensus.
+pub trait CompatibleDigestItem: Sized {
+	/// Construct a digest item which is a slot number and a signature on the
+	/// hash.
+	pub fn aura_seal(slot_number: u64, signature: ed25519::Signature) -> Self;
 }
 
 /// Start the aura worker. This should be run in a tokio runtime.
@@ -176,8 +171,10 @@ pub fn start_aura<B, C, E, Error>(config: Config, client: Arc<C>, env: Arc<E>)
 			Either::A(proposal_work
 				.map(move |b| {
 					// TODO: add digest item and import
-					let (header, body) = b.deconstruct();
-					let hash = header.hash();
+					let (mut header, body) = b.deconstruct();
+					let pre_hash = header.hash();
+
+					let
 					let import_block = ImportBlock {
 						origin: BlockOrigin::Own,
 						header,
@@ -188,7 +185,7 @@ pub fn start_aura<B, C, E, Error>(config: Config, client: Arc<C>, env: Arc<E>)
 						auxiliary: Vec::new(),
 					};
 					if let Err(e) = block_import.import_block(import_block, None) {
-						warn!("Error importing block {:?}", hash);
+						warn!("Error importing block {:?}: {:?}", hash, e);
 					}
 				})
 				.map_err(|e| warn!("Failed to construct block: {:?}", e))

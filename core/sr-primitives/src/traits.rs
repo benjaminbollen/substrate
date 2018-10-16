@@ -418,6 +418,8 @@ pub trait Header: Clone + Send + Sync + Codec + Eq + MaybeSerializeDebug + 'stat
 	fn set_parent_hash(&mut self, Self::Hash);
 
 	fn digest(&self) -> &Self::Digest;
+	/// Get a mutable reference to the digest.
+	fn digest_mut(&mut self) -> &mut Self::Digest;
 	fn set_digest(&mut self, Self::Digest);
 
 	fn hash(&self) -> Self::Hash {
