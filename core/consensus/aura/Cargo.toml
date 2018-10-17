@@ -10,6 +10,7 @@ parity-codec = { version = "2.0" }
 substrate-consensus-common = { path = "../common" }
 substrate-client = { path = "../../client" }
 substrate-primitives = { path = "../../primitives" }
+substrate-network = { path = "../../network" }
 srml-support = { path = "../../../srml/support" }
 sr-primitives = { path = "../../sr-primitives" }
 sr-version = { path = "../../sr-version" }

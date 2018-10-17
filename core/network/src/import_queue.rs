@@ -439,7 +439,6 @@ fn import_single_block<B: BlockT, V: Verifier<B>>(
 				trace!(target: "sync", "Verifying {}({}) failed: {}", number, hash, msg);
 			}
 			BlockImportError::VerificationFailed(peer, msg)
-
 		})?;
 
 	match chain.import(import_block, new_authorities) {

@@ -30,6 +30,7 @@ extern crate parity_codec as codec;
 extern crate substrate_consensus_common as consensus_common;
 extern crate substrate_client as client;
 extern crate substrate_primitives as primitives;
+extern crate substrate_network as network;
 extern crate srml_support as runtime_support;
 extern crate sr_primitives as runtime_primitives;
 extern crate sr_version as runtime_version;
@@ -52,7 +53,8 @@ use codec::Encode;
 use consensus_common::{Authorities, BlockImport, Environment, Proposer};
 use client::{ChainHead, ImportBlock, BlockOrigin};
 use runtime_primitives::generic::BlockId;
-use runtime_primitives::traits::{Block, Header, DigestItemFor};
+use runtime_primitives::traits::{Block, Header, Digest, DigestItemFor};
+use network::import_queue::{ImportQueue, Verifier as Verifier, BasicQueue};
 use primitives::{AuthorityId, ed25519};
 
 use futures::{Stream, Future, IntoFuture};
@@ -107,6 +109,9 @@ pub trait CompatibleDigestItem: Sized {
 	/// Construct a digest item which is a slot number and a signature on the
 	/// hash.
 	fn aura_seal(slot_number: u64, signature: ed25519::Signature) -> Self;
+
+	/// If this item is an Aura seal, return the slot number and signature.
+	fn as_aura_seal(&self) -> Option<(u64, &ed25519::Signature)>;
 }
 
 /// Start the aura worker. This should be run in a tokio runtime.
@@ -198,4 +203,114 @@ pub fn start_aura<B, C, E, Error>(config: Config, client: Arc<C>, env: Arc<E>)
 				.map_err(|e| warn!("Failed to construct block: {:?}", e))
 			)
 		})
+}
+
+// a header which has been checked
+enum CheckedHeader<H> {
+	// a header which has slot in the future. this is the full header (not stripped)
+	// and the slot in which it should be processed.
+	Deferred(H, u64),
+	// a header which is fully checked, including signature. This is the pre-header
+	// accompanied by the seal components.
+	Checked(H, u64, ed25519::Signature),
+}
+
+
+/// check a header has been signed by the right key. If the slot is too far in the future, an error will be returned.
+/// if it's successful, returns the pre-header, the slot number, and the signat.
+//
+// TODO: misbehavior types.
+fn check_header<B: Block>(slot_now: u64, mut header: B::Header, hash: B::Hash, authorities: &[AuthorityId])
+	-> Result<CheckedHeader<B::Header>, String>
+	where DigestItemFor<B>: CompatibleDigestItem
+{
+	let digest_item = match header.digest_mut().pop() {
+		Some(x) => x,
+		None => return Err(format!("Header {:?} is unsealed", hash)),
+	};
+	let (slot_num, &sig) = match digest_item.as_aura_seal() {
+		Some(x) => x,
+		None => return Err(format!("Header {:?} is unsealed", hash)),
+	};
+
+	if slot_num > slot_now {
+		header.digest_mut().push(digest_item);
+		Ok(CheckedHeader::Deferred(header, slot_num))
+	} else {
+		// check the signature is valid under the expected authority and
+		// chain state.
+		if authorities.is_empty() { return Err(format!("No authorities at {:?}", hash)) }
+
+		let idx = slot_num % (authorities.len() as u64);
+
+		let expected_author = *authorities.get(idx as usize)
+			.expect("authorities not empty; index constrained to length; index is valid; qed");
+
+		let pre_hash = header.hash();
+		let to_sign = (slot_num, pre_hash).encode();
+		let public = ed25519::Public(expected_author.0);
+
+		if ed25519::verify_strong(&sig, &to_sign[..], public) {
+			Ok(CheckedHeader::Checked(header, slot_num, sig))
+		} else {
+			Err(format!("Bad signature on {:?}", hash))
+		}
+	}
+}
+
+struct AuraVerifier<C> {
+	config: Config,
+	client: Arc<C>,
+}
+
+impl<B: Block, C> Verifier<B> for AuraVerifier<C> where
+	C: Authorities<B> + BlockImport<B> + Send + Sync,
+	DigestItemFor<B>: CompatibleDigestItem,
+{
+	fn verify(
+		&self,
+		origin: BlockOrigin,
+		header: B::Header,
+		_justification: Vec<u8>,
+		body: Option<Vec<B::Extrinsic>>
+	) -> Result<(ImportBlock<B>, Option<Vec<AuthorityId>>), String> {
+		let slot_now = slot_now(self.config.slot_duration).unwrap_or(0);
+		let hash = header.hash();
+		let parent_hash = *header.parent_hash();
+		let authorities = self.client.authorities(&BlockId::Hash(parent_hash))
+			.map_err(|e| format!("Could not fetch authorities at {:?}: {:?}", parent_hash, e))?;
+
+		// we add one to allow for some small drift.
+		// TODO: in the future, alter this queue to allow deferring of headers.
+		let checked_header = check_header::<B>(slot_now + 1, header, hash, &authorities[..])?;
+		match checked_header {
+			CheckedHeader::Checked(pre_header, slot_num, sig) => {
+				let item = <DigestItemFor<B>>::aura_seal(slot_num, sig);
+
+				let import_block = ImportBlock {
+					origin,
+					header: pre_header,
+					external_justification: Vec::new(),
+					post_runtime_digests: vec![item],
+					body,
+					finalized: false,
+					auxiliary: Vec::new(),
+				};
+
+				Ok((import_block, None)) // TODO: extract authorities item.
+			}
+			CheckedHeader::Deferred(_, _) =>
+				Err(format!("Header {:?} rejected: too far in the future", hash)),
+		}
+	}
+}
+
+/// Start an import queue for the Aura consensus algorithm.
+pub fn import_queue<B, C>(config: Config, client: Arc<C>) -> impl ImportQueue<B> where
+	B: Block,
+	C: Authorities<B> + BlockImport<B> + Send + Sync,
+	DigestItemFor<B>: CompatibleDigestItem,
+{
+	let verifier = Arc::new(AuraVerifier { config, client });
+	BasicQueue::new(verifier)
 }

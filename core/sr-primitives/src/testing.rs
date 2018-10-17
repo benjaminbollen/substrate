@@ -42,6 +42,10 @@ impl traits::Digest for Digest {
 	fn push(&mut self, item: Self::Item) {
 		self.logs.push(item);
 	}
+
+	fn pop(&mut self) -> Option<Self::Item> {
+		self.logs.pop()
+	}
 }
 
 #[derive(PartialEq, Eq, Clone, Serialize, Deserialize, Debug, Encode, Decode)]
