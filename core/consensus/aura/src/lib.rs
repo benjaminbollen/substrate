@@ -48,10 +48,11 @@ extern crate futures;
 use std::sync::Arc;
 use std::time::Duration;
 
+use codec::Encode;
 use consensus_common::{Authorities, BlockImport, Environment, Proposer};
 use client::{ChainHead, ImportBlock, BlockOrigin};
 use runtime_primitives::generic::BlockId;
-use runtime_primitives::traits::{Block, Header, Digest, DigestItem, DigestItemFor};
+use runtime_primitives::traits::{Block, Header, DigestItemFor};
 use primitives::{AuthorityId, ed25519};
 
 use futures::{Stream, Future, IntoFuture};
@@ -105,7 +106,7 @@ fn slot_now(slot_duration: u64) -> Result<u64, ()> {
 pub trait CompatibleDigestItem: Sized {
 	/// Construct a digest item which is a slot number and a signature on the
 	/// hash.
-	pub fn aura_seal(slot_number: u64, signature: ed25519::Signature) -> Self;
+	fn aura_seal(slot_number: u64, signature: ed25519::Signature) -> Self;
 }
 
 /// Start the aura worker. This should be run in a tokio runtime.
@@ -115,6 +116,7 @@ pub fn start_aura<B, C, E, Error>(config: Config, client: Arc<C>, env: Arc<E>)
 	C: Authorities<B, Error=Error> + BlockImport<B, Error=Error> + ChainHead<B>,
 	E: Environment<B, Error=Error>,
 	E::Proposer: Proposer<B, Error=Error>,
+	DigestItemFor<B>: CompatibleDigestItem,
 	Error: ::std::error::Error + Send + 'static + From<::consensus_common::Error>,
 {
 	use futures::future::Either;
@@ -170,22 +172,27 @@ pub fn start_aura<B, C, E, Error>(config: Config, client: Arc<C>, env: Arc<E>)
 			let block_import = client.clone();
 			Either::A(proposal_work
 				.map(move |b| {
-					// TODO: add digest item and import
-					let (mut header, body) = b.deconstruct();
+					let (header, body) = b.deconstruct();
 					let pre_hash = header.hash();
+					let parent_hash = header.parent_hash().clone();
 
-					let
+					// sign the pre-sealed hash of the block and then
+					// add it to a digest item.
+					let to_sign = (slot_num, pre_hash).encode();
+					let signature = key.sign(&to_sign[..]);
+					let item = <DigestItemFor<B> as CompatibleDigestItem>::aura_seal(slot_num, signature);
 					let import_block = ImportBlock {
 						origin: BlockOrigin::Own,
 						header,
 						external_justification: Vec::new(),
-						internal_justification: Vec::new(), // TODO
+						post_runtime_digests: vec![item],
 						body: Some(body),
 						finalized: false,
 						auxiliary: Vec::new(),
 					};
+
 					if let Err(e) = block_import.import_block(import_block, None) {
-						warn!("Error importing block {:?}: {:?}", hash, e);
+						warn!("Error with block built on {:?}: {:?}", parent_hash, e);
 					}
 				})
 				.map_err(|e| warn!("Failed to construct block: {:?}", e))

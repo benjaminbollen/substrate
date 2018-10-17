@@ -74,6 +74,7 @@ impl traits::Header for Header {
 	fn set_parent_hash(&mut self, hash: Self::Hash) { self.parent_hash = hash }
 
 	fn digest(&self) -> &Self::Digest { &self.digest }
+	fn digest_mut(&mut self) -> &mut Self::Digest { &mut self.digest }
 	fn set_digest(&mut self, digest: Self::Digest) { self.digest = digest }
 
 	fn new(
